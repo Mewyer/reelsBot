@@ -31,9 +31,9 @@
 
 ### 2. Установка
 ```bash
-git clone https://github.com/yourusername/reels-bot.git
+git clone https://github.com/Mewyer/reelsBot
 cd reels-bot
-cp .env.example .env
+touch .env
 nano .env  # Заполните ваши ключи
 ```
 ### 3. Запуск
