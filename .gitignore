@@ -1,0 +1,91 @@
+# Общие системные файлы
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.bak
+*.tmp
+*.temp
+
+# Файлы IDE
+.idea/
+.vscode/
+*.code-workspace
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.python-version
+venv/
+env/
+.venv/
+.env/
+
+# Логи и данные
+*.log
+*.sqlite3
+*.db
+*.cache
+
+# Конфигурационные файлы
+.env
+.env.local
+.env.dev
+.env.prod
+config/secrets/*
+
+# Медиа и временные файлы
+/temp/*
+!/temp/.gitkeep
+/assets/user_uploads/*
+!/assets/.gitkeep
+
+# Docker
+docker-compose.override.yml
+
+# Миграции БД (если используете)
+/migrations/
+
+# Тестовые данные
+/test_data/
+/coverage/
+
+# Jupyter Notebook
+*.ipynb
+.ipynb_checkpoints/
+
+# PyCharm
+.idea/
+*.iml
+
+# VS Code
+.vscode/settings.json
+.vscode/launch.json
+
+# Временные файлы FFmpeg
+*.mp3
+*.mp4
+*.srt
+*.ass
+
+# Бэкапы
+*.bak
+*.backup
+
+# Локальные настройки
+local_settings.py
+local_config.yaml
+
+# Файлы специфичные для проекта
+/instance/
+/web_static/
+
+# Экспортированные файлы
+/exports/
+/downloads/
+
+# Файлы сборки
+/build/
+/dist/

@@ -1,0 +1,22 @@
+# Core
+python-dotenv>=0.21.0
+aiohttp>=3.8.0
+
+# AI
+openai>=1.0.0
+elevenlabs>=0.2.4
+
+# Database
+asyncpg>=0.27.0
+redis>=4.5.1
+
+# Telegram
+aiogram>=3.0.0b7
+
+# Video processing
+ffmpeg-python>=0.2.0
+python-magic>=0.4.27
+
+# Utilities
+backoff>=2.2.0
+python-dateutil>=2.8.2
