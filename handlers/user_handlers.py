@@ -6,6 +6,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from services import gpt_service, tts_service, video_service
 import time
+from services import subscription_service
 from services.database import db
 from datetime import datetime, timedelta
 from config import config
@@ -17,6 +18,49 @@ from aiohttp import ClientConnectorError
 import re
 
 router = Router()
+
+VIDEO_STYLES = {
+    "inspire": {
+        "name": "💡 Вдохновляющий",
+        "backgrounds": [
+            "city_sunlight.mp4",
+            "studio_white.mp4",
+            "sunset_nature.mp4",
+            "warm_abstract.mp4"
+        ],
+        "default": "city_sunlight.mp4"
+    },
+    "deep": {
+        "name": "🌌 Глубокий",
+        "backgrounds": [
+            "dark_forest.mp4",
+            "firelight.mp4",
+            "deep_abstract.mp4",
+            "night_glow.mp4"
+        ],
+        "default": "dark_forest.mp4"
+    },
+    "light": {
+        "name": "☁️ Лёгкий",
+        "backgrounds": [
+            "cloud_sky.mp4",
+            "color_flow.mp4",
+            "watercolor_pastel.mp4",
+            "light_shapes.mp4"
+        ],
+        "default": "cloud_sky.mp4"
+    },
+    "podcast": {
+        "name": "🎙 Подкаст",
+        "backgrounds": [
+            "podcast_mic.mp4",
+            "studio_light.mp4",
+            "studio_dark.mp4",
+            "visual_wave.mp4"
+        ],
+        "default": "podcast_mic.mp4"
+    }
+}
 
 class GenerationStates(StatesGroup):
     waiting_for_idea = State()
@@ -58,9 +102,29 @@ async def _get_available_backgrounds():
         os.makedirs(bg_dir, exist_ok=True)
         return backgrounds
     
+    # Сопоставление имен файлов с человекочитаемыми названиями
+    name_mapping = {
+        "city_sunlight.mp4": "Солнечный город",
+        "studio_white.mp4": "Затягивающий полет",
+        "sunset_nature.mp4": "Золотой час природы",
+        "warm_abstract.mp4": "Поле подсолнухов",
+        "dark_forest.mp4": "Тёмный лес",
+        "firelight.mp4": "Камин",
+        "deep_abstract.mp4": "Темный вечер в лесу",
+        "night_glow.mp4": "Ночное свечение луны",
+        "cloud_sky.mp4": "Облака",
+        "color_flow.mp4": "Цветной полет",
+        "watercolor_pastel.mp4": "Рыжий кот",
+        "light_shapes.mp4": "Полет над облаками",
+        "podcast_mic.mp4": "Микрофон",
+        "studio_light.mp4": "Светлая студия",
+        "studio_dark.mp4": "Тёмная студия",
+        "visual_wave.mp4": "Тёмная студия v2"
+    }
+    
     for filename in os.listdir(bg_dir):
         if filename.endswith(('.mp4', '.mov', '.avi')):
-            name = filename.split('.')[0].replace('_', ' ').capitalize()
+            name = name_mapping.get(filename, filename.split('.')[0].replace('_', ' ').capitalize())
             backgrounds.append({
                 'filename': filename,
                 'name': name,
@@ -71,6 +135,16 @@ async def _get_available_backgrounds():
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     user_id = message.from_user.id
+    username = message.from_user.username
+    full_name = message.from_user.full_name
+    
+    # Сохраняем/обновляем данные пользователя в базе
+    await db.create_user(
+        user_id=user_id,
+        username=username,
+        full_name=full_name
+    )
+    
     profile = await db.get_user_profile(user_id)
     
     if profile:
@@ -79,7 +153,7 @@ async def cmd_start(message: Message, state: FSMContext):
     
     await state.set_state(ProfileStates.waiting_niche)
     await message.answer("👋 Добро пожаловать! Давайте настроим ваш профиль.\n\n📌 В какой нише вы создаете контент? (пример: красота, бизнес, спорт)")
-
+    
 @router.message(ProfileStates.waiting_niche)
 async def process_niche(message: Message, state: FSMContext):
     await state.update_data(niche=message.text)
@@ -126,20 +200,29 @@ async def cmd_new_video(message: Message, state: FSMContext):
         await message.answer("ℹ️ Пожалуйста, сначала настройте профиль: /start")
         return
     
-    # Проверяем лимит
-    can_generate, remaining = await check_usage_limit(user_id)
-    if not can_generate:
+    # Проверяем лимиты
+    can_generate, limit_message = await subscription_service.check_user_limits(user_id, db.pool)
+    credits = await db.get_video_credits(user_id)
+    
+    if not can_generate and credits <= 0:
+        builder = InlineKeyboardBuilder()
+        builder.button(text="🎬 Купить 1 видео", callback_data="buy_single")
+        builder.button(text="🎬 Купить 5 видео", callback_data="buy_pack5")
+        builder.button(text="🎬 Купить 10 видео", callback_data="buy_pack10")
+        builder.button(text="🎬 Купить 20 видео", callback_data="buy_pack20")
+        builder.button(text="💎 Подписаться", callback_data="subscribe_menu")
+        builder.adjust(2)
+        
         await message.answer(
-            f"⚠️ Вы исчерпали дневной лимит генераций.\n"
-            f"Лимит обновится через {_time_until_midnight()}.\n"
-            f"Для увеличения лимита рассмотрите премиум подписку: /premium"
+            f"⚠️ Вы достигли лимита по вашему тарифу.\n{limit_message}\n\n"
+            "Вы можете купить дополнительные видео или перейти на более высокий тариф.",
+            reply_markup=builder.as_markup()
         )
         return
     
     await state.set_state(GenerationStates.waiting_for_idea)
     await message.answer("💡 Опишите идею для вашего видео (текстом или голосовым сообщением)\nНапример: '5 лайфхаков для путешествий'")
 
-# Добавляем вспомогательную функциюapprove_script
 def _time_until_midnight() -> str:
     now = datetime.now()
     midnight = (now + timedelta(days=1)).replace(
@@ -149,6 +232,13 @@ def _time_until_midnight() -> str:
     hours, remainder = divmod(delta.seconds, 3600)
     minutes, _ = divmod(remainder, 60)
     return f"{hours} ч. {minutes} мин."
+
+def _time_until_month_end() -> str:
+    now = datetime.now()
+    next_month = now.replace(day=28) + timedelta(days=4)  # Переход на следующий месяц
+    month_end = next_month.replace(day=1) - timedelta(days=1)
+    delta = month_end - now
+    return f"{delta.days} дн. {delta.seconds // 3600} ч."
 
 @router.message(GenerationStates.waiting_for_idea)
 async def process_idea(message: Message, state: FSMContext):
@@ -160,37 +250,100 @@ async def process_idea(message: Message, state: FSMContext):
     await state.set_state(GenerationStates.waiting_for_style)
     
     builder = InlineKeyboardBuilder()
-    builder.button(text="📊 Экспертный", callback_data="style_expert")
-    builder.button(text="🎭 Развлекательный", callback_data="style_entertain")
-    builder.button(text="💡 Вдохновляющий", callback_data="style_inspire")
-    builder.button(text="🎥 Кинематографичный", callback_data="style_cinematic")
+    for style_id, style_data in VIDEO_STYLES.items():
+        builder.button(text=style_data["name"], callback_data=f"style_{style_id}")
     builder.adjust(2)
     
     await message.answer("🎬 Выберите стиль для вашего видео:", reply_markup=builder.as_markup())
 
+async def _generate_script(callback: CallbackQuery, state: FSMContext):
+    await callback.message.answer("🔄 Генерирую текст для озвучки... Пожалуйста, подождите ⏳")
+    
+    user_id = callback.from_user.id
+    data = await state.get_data()
+    
+    try:
+        profile = await db.get_user_profile(user_id)
+        script = await gpt_service.generate_script(
+            f"Напиши текст для озвучки видео в {data['style']} стиле. Тема: {data['idea']}",
+            profile
+        )
+        
+        if not script:
+            raise Exception("Не удалось создать текст для озвучки")
+        
+        await state.update_data(script=script)
+        await state.set_state(GenerationStates.previewing_script)
+        
+        builder = InlineKeyboardBuilder()
+        builder.button(text="👍 Одобрить", callback_data="script_approve")
+        builder.button(text="✍️ Редактировать", callback_data="script_edit")
+        builder.button(text="🔄 Новый вариант", callback_data="script_regenerate")
+        builder.button(text="❌ Отменить", callback_data="script_cancel")
+        builder.adjust(1, repeat=True)
+        
+        bg_name = "Черный"
+        if data.get('background'):
+            bg_name = data['background'].split('.')[0].replace('_', ' ').capitalize()
+        
+        await callback.message.answer(
+            f"🎬 Текст для озвучки готов!\n\n"
+            f"Стиль: {data['style']}\n"
+            f"Тема: {data['idea']}\n"
+            f"Фон: {bg_name}\n\n"
+            f"{script}",
+            reply_markup=builder.as_markup()
+        )
+    except Exception as e:
+        logging.error(f"Ошибка генерации текста: {str(e)}")
+        await callback.message.answer("⚠️ Не удалось создать текст для озвучки")
+        await state.clear()
+
 @router.callback_query(GenerationStates.waiting_for_style, F.data.startswith("style_"))
 async def process_style_selection(callback: CallbackQuery, state: FSMContext):
-    style_map = {
-        "style_expert": "Экспертный",
-        "style_entertain": "Развлекательный",
-        "style_inspire": "Вдохновляющий",
-        "style_cinematic": "Кинематографичный"
-    }
+    style_id = callback.data.replace("style_", "")
+    style_data = VIDEO_STYLES.get(style_id)
     
-    style = style_map.get(callback.data, "Экспертный")
-    await state.update_data(style=style)
+    if not style_data:
+        await callback.answer("Неизвестный стиль")
+        return
+    
+    await state.update_data(style=style_data["name"], style_id=style_id)
     await callback.message.edit_reply_markup()
     await state.set_state(GenerationStates.waiting_for_background)
     
+    # Показываем фоны для выбранного стиля
     backgrounds = await _get_available_backgrounds()
+    available_bgs = [bg for bg in backgrounds if bg['filename'] in style_data["backgrounds"]]
+    
     builder = InlineKeyboardBuilder()
     
-    for bg in backgrounds:
+    for bg in available_bgs:
         builder.button(text=f"🎥 {bg['name']}", callback_data=f"bg_preview_{bg['filename']}")
+    
+    # Добавляем кнопку для выбора фона по умолчанию
+    builder.button(text="✅ По умолчанию", callback_data=f"bg_default_{style_id}")
     builder.button(text="🚫 Без фона", callback_data="bg_none")
     builder.adjust(2)
     
-    await callback.message.answer("🎥 Выберите фон для вашего видео:", reply_markup=builder.as_markup())
+    await callback.message.answer(
+        f"🎥 Выберите фон для стиля {style_data['name']}:",
+        reply_markup=builder.as_markup()
+    )
+
+# Добавим обработчик для выбора фона по умолчанию
+@router.callback_query(GenerationStates.waiting_for_background, F.data.startswith("bg_default_"))
+async def select_default_background(callback: CallbackQuery, state: FSMContext):
+    style_id = callback.data.replace("bg_default_", "")
+    style_data = VIDEO_STYLES.get(style_id)
+    
+    if not style_data:
+        await callback.answer("Неизвестный стиль")
+        return
+    
+    await state.update_data(background=style_data["default"])
+    await callback.message.edit_reply_markup()
+    await _generate_script(callback, state)
     
 
 @router.callback_query(GenerationStates.waiting_for_background, F.data.startswith("bg_preview_"))
@@ -311,16 +464,22 @@ async def select_no_background(callback: CallbackQuery, state: FSMContext):
 
 @router.message(Command("status"))
 async def cmd_status(message: Message):
-    """Проверка статуса подписки и кредитов"""
+    """Проверка статуса подписки и кредитов с отображением месячных лимитов"""
     user_id = message.from_user.id
     
     async with db.pool.acquire() as conn:
         user = await conn.fetchrow(
-            """SELECT subscription_type, subscription_expire, 
-                  COALESCE(video_credits, 0) as video_credits,
+            """SELECT 
+                  u.subscription_type, 
+                  u.subscription_expire, 
+                  COALESCE(u.video_credits, 0) as video_credits,
                   (SELECT COUNT(*) FROM generations 
-                   WHERE user_id = $1 AND DATE(created_at) = CURRENT_DATE) as generations_today
-               FROM users WHERE user_id = $1""",
+                   WHERE user_id = $1 AND DATE(created_at) = CURRENT_DATE) as generations_today,
+                  (SELECT COUNT(*) FROM generations 
+                   WHERE user_id = $1 AND DATE_TRUNC('month', created_at) = DATE_TRUNC('month', CURRENT_DATE)) as generations_month,
+                  (SELECT COUNT(*) FROM generations 
+                   WHERE user_id = $1) as generations_total
+               FROM users u WHERE u.user_id = $1""",
             user_id
         )
         
@@ -328,18 +487,37 @@ async def cmd_status(message: Message):
             await message.answer("❌ Пользователь не найден")
             return
         
-        limit = (config.PREMIUM_DAILY_LIMIT 
-                if user['subscription_type'] == 'premium' 
-                else config.FREE_DAILY_LIMIT)
+        # Определяем лимиты в зависимости от типа подписки
+        if user['subscription_type'] == 'free':
+            daily_limit = config.FREE_DAILY_LIMIT
+            monthly_limit = config.FREE_MONTHLY_LIMIT
+        elif user['subscription_type'] == 'lite':
+            daily_limit = config.LITE_DAILY_LIMIT
+            monthly_limit = config.LITE_MONTHLY_LIMIT
+        else:  # premium
+            daily_limit = config.PREMIUM_DAILY_LIMIT
+            monthly_limit = config.PREMIUM_MONTHLY_LIMIT
         
+        # Рассчитываем оставшиеся дни подписки
+        days_left = (user['subscription_expire'] - datetime.now()).days if user['subscription_expire'] else 0
+        
+        # Формируем сообщение
         status_msg = [
-            f"📊 Ваш Профиль:",
-            f"💎 Подписка: {user['subscription_type'].capitalize()}",
-            f"📅 Осталось дней: {(user['subscription_expire'] - datetime.now()).days if user['subscription_expire'] else 0}",
-            f"🎬 Генераций сегодня: {user['generations_today']}/{limit}",
+            f"📊 Ваш статус:",
+            f"💎 Тариф: {user['subscription_type'].capitalize()}",
+            f"📅 Осталось дней подписки: {days_left}",
+            "",
+            f"🎬 Генераций сегодня: {user['generations_today']}/{daily_limit}",
+            f"📅 Генераций в этом месяце: {user['generations_month']}/{monthly_limit}",
             f"🎫 Видео-кредитов: {user['video_credits']}",
-            f"\nКупить дополнительные видео: /buy_videos"
-             f"\nКупить премиум: /subscribe"
+            f"🔢 Всего создано видео: {user['generations_total']}",
+            "",
+            f"🔄 Лимит обновится через {_time_until_midnight()}",
+            "",
+            "💡 Команды:",
+            "/buy_videos - Купить дополнительные видео",
+            "/subscribe - Изменить тариф подписки",
+            "/generate - Создать новое видео"
         ]
         
         await message.answer("\n".join(status_msg))

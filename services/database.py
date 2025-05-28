@@ -3,6 +3,7 @@ from asyncpg import Pool, Connection
 from config import config
 from typing import Optional, Dict, Any, Union
 import logging
+import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,31 @@ class Database:
         except Exception as e:
             logger.error(f"Database connection failed: {e}")
             raise
+    
+    async def get_monthly_usage(self, user_id: int) -> int:
+        """Get user's generation count for current month"""
+        async with self.pool.acquire() as conn:
+            month_start = datetime.now().replace(day=1).date()
+            return await conn.fetchval(
+                "SELECT COUNT(*) FROM generations WHERE user_id = $1 AND created_at >= $2",
+                user_id, month_start
+            )
+
+    async def get_available_credits(self, user_id: int) -> tuple:
+        """Get available video credits and subscription info"""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT 
+                    subscription_type, 
+                    COALESCE(video_credits, 0) as credits,
+                    (SELECT COUNT(*) FROM generations 
+                    WHERE user_id = $1 AND DATE(created_at) = CURRENT_DATE) as today_count,
+                    (SELECT COUNT(*) FROM generations 
+                    WHERE user_id = $1 AND DATE(created_at) >= DATE_TRUNC('month', CURRENT_DATE)) as month_count
+                FROM users WHERE user_id = $1""",
+                user_id
+            )
+            return row
 
     async def _init_db(self):
        """Initialize database schema"""
@@ -39,7 +65,7 @@ class Database:
                     is_admin BOOLEAN DEFAULT FALSE,
                     subscription_type TEXT DEFAULT 'free',
                     subscription_expire TIMESTAMP,
-                    video_credits INTEGER DEFAULT 0,  -- Добавляем новую колонку
+                    video_credits INTEGER DEFAULT 0,
                     created_at TIMESTAMP DEFAULT NOW(),
                     updated_at TIMESTAMP DEFAULT NOW()
                 );
@@ -70,7 +96,6 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_generations_created_at ON generations(created_at);
             """)
 
-    # database.py (добавляем новые методы в класс Database)
     async def get_user_usage(self, user_id: int, date: str = None) -> int:
         """Get user's generation count for current day"""
         async with self.pool.acquire() as conn:
@@ -82,7 +107,7 @@ class Database:
             return await conn.fetchval(query, user_id, date)
 
     async def add_video_credits(self, user_id: int, amount: int) -> bool:
-        """Добавляет разовые видео-кредиты"""
+        """Add video credits to user"""
         async with self.pool.acquire() as conn:
             await conn.execute("""
                 INSERT INTO users (user_id, video_credits)
@@ -94,7 +119,7 @@ class Database:
             return True
 
     async def use_video_credit(self, user_id: int) -> bool:
-        """Использует один видео-кредит"""
+        """Use one video credit"""
         async with self.pool.acquire() as conn:
             result = await conn.execute("""
                 UPDATE users 
@@ -105,7 +130,7 @@ class Database:
             return bool(result)
 
     async def get_video_credits(self, user_id: int) -> int:
-        """Получает количество доступных видео-кредитов"""
+        """Get available video credits count"""
         async with self.pool.acquire() as conn:
             return await conn.fetchval("""
                 SELECT COALESCE(video_credits, 0) FROM users WHERE user_id = $1
@@ -125,14 +150,14 @@ class Database:
         username: Optional[str] = None,
         full_name: Optional[str] = None
     ) -> bool:
-        """Create or update basic user record"""
+        """Create or update basic user record with all available info"""
         async with self.pool.acquire() as conn:
             await conn.execute("""
                 INSERT INTO users (user_id, username, full_name)
                 VALUES ($1::bigint, $2::text, $3::text)
                 ON CONFLICT (user_id) DO UPDATE SET
-                    username = EXCLUDED.username,
-                    full_name = EXCLUDED.full_name,
+                    username = COALESCE(EXCLUDED.username, users.username),
+                    full_name = COALESCE(EXCLUDED.full_name, users.full_name),
                     updated_at = NOW()
             """, user_id, username, full_name)
             return True

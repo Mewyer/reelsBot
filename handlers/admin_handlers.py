@@ -26,6 +26,8 @@ class BroadcastStates(StatesGroup):
     waiting_for_message = State()
     confirm_send = State()
 
+class UserSearchStates(StatesGroup):
+    waiting_for_query = State()
 
 async def check_admin(user_id: int) -> bool:
     """Проверяет, является ли пользователь администратором"""
@@ -41,9 +43,8 @@ async def cmd_admin(message: Message):
     builder = InlineKeyboardBuilder()
     builder.add(
         types.InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats"),
-        types.InlineKeyboardButton(text="👥 Пользователи", callback_data="admin_users"),
+        types.InlineKeyboardButton(text="👥 Список пользователей", callback_data="admin_users_list"),
         types.InlineKeyboardButton(text="🎬 Генерации", callback_data="admin_generations"),
-        types.InlineKeyboardButton(text="💎 Подписки", callback_data="admin_subscriptions"),
         types.InlineKeyboardButton(text="✉️ Рассылка", callback_data="admin_broadcast")
     )
     builder.adjust(2)
@@ -52,6 +53,275 @@ async def cmd_admin(message: Message):
         "🛠 Админ-панель:",
         reply_markup=builder.as_markup()
     )
+
+@router.callback_query(F.data == "admin_users_list")
+async def admin_users_list(callback: CallbackQuery):
+    """Показывает список всех пользователей с пагинацией"""
+    if not await check_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещен")
+        return
+    
+    try:
+        async with db.pool.acquire() as conn:
+            users = await conn.fetch("""
+                SELECT user_id, username, full_name 
+                FROM users 
+                ORDER BY username IS NULL, username ASC, created_at DESC
+                LIMIT 100
+            """)
+        
+        if not users:
+            await callback.answer("ℹ️ Нет пользователей")
+            return
+        
+        # Создаем клавиатуру с username пользователей
+        builder = InlineKeyboardBuilder()
+        for user in users:
+            username = user['username'] or f"ID:{user['user_id']}"
+            builder.add(
+                types.InlineKeyboardButton(
+                    text=f"@{username}",
+                    callback_data=f"user_detail_{user['user_id']}"
+                )
+            )
+        builder.adjust(1)
+        
+        # Добавляем кнопку "Показать еще" если пользователей много
+        if len(users) == 100:
+            builder.row(
+                types.InlineKeyboardButton(
+                    text="⬇️ Показать еще",
+                    callback_data="admin_users_list_more"
+                )
+            )
+        
+        await callback.message.answer(
+            "👥 Список пользователей:",
+            reply_markup=builder.as_markup()
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка в admin_users_list: {e}")
+        await callback.message.answer("⚠️ Ошибка при получении списка пользователей")
+    finally:
+        await callback.answer()
+
+
+@router.callback_query(F.data.startswith("user_detail_"))
+async def show_user_detail(callback: CallbackQuery):
+    """Показывает детальную информацию о пользователе"""
+    if not await check_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещен")
+        return
+    
+    try:
+        user_id = int(callback.data.split("_")[2])
+        await show_user_profile(callback.message, user_id=user_id)
+    except Exception as e:
+        logger.error(f"Ошибка при показе профиля пользователя: {e}")
+        await callback.message.answer("⚠️ Ошибка при загрузке профиля")
+    finally:
+        await callback.answer()
+
+async def show_user_profile(message: Message, user_data: Optional[dict] = None, user_id: Optional[int] = None):
+    """Показывает профиль пользователя с возможностью управления"""
+    try:
+        if user_data is None and user_id is not None:
+            async with db.pool.acquire() as conn:
+                user_data = await conn.fetchrow(
+                    """
+                    SELECT 
+                        u.*,
+                        p.niche,
+                        p.content_style,
+                        COUNT(g.id) as generations_count,
+                        SUM(CASE WHEN g.status = 'completed' THEN 1 ELSE 0 END) as completed_generations,
+                        (SELECT COUNT(*) FROM generations 
+                         WHERE user_id = u.user_id AND DATE(created_at) = CURRENT_DATE) as today_generations,
+                        (SELECT COUNT(*) FROM generations 
+                         WHERE user_id = u.user_id AND DATE_TRUNC('month', created_at) = DATE_TRUNC('month', CURRENT_DATE)) as month_generations
+                    FROM users u
+                    LEFT JOIN user_profiles p ON u.user_id = p.user_id
+                    LEFT JOIN generations g ON u.user_id = g.user_id
+                    WHERE u.user_id = $1
+                    GROUP BY u.user_id, p.niche, p.content_style
+                    """,
+                    user_id
+                )
+        
+        if not user_data:
+            await message.answer("⚠️ Пользователь не найден")
+            return
+        
+        # Определяем лимиты в зависимости от типа подписки
+        if user_data['subscription_type'] == 'free':
+            daily_limit = config.FREE_DAILY_LIMIT
+            monthly_limit = config.FREE_MONTHLY_LIMIT
+        elif user_data['subscription_type'] == 'lite':
+            daily_limit = config.LITE_DAILY_LIMIT
+            monthly_limit = config.LITE_MONTHLY_LIMIT
+        else:  # premium
+            daily_limit = config.PREMIUM_DAILY_LIMIT
+            monthly_limit = config.PREMIUM_MONTHLY_LIMIT
+        
+        # Формируем информацию о пользователе
+        username = f"@{user_data['username']}"
+        full_name = user_data['full_name'] 
+        expire_date = user_data['subscription_expire'].strftime("%d.%m.%Y") if user_data['subscription_expire'] else "нет"
+        
+        response = [
+            "👤 Профиль пользователя:",
+            f"🆔 ID: {user_data['user_id']}",
+            f"📱 Username: {username}",
+            f"👤 Полное имя: {full_name}",
+            f"📅 Дата регистрации: {user_data['created_at'].strftime('%d.%m.%Y %H:%M')}",
+            f"💎 Подписка: {user_data['subscription_type'].capitalize()}",
+            f"📅 Окончание подписки: {expire_date}",
+            f"🎬 Генераций сегодня: {user_data['today_generations']}/{daily_limit}",
+            f"📅 Генераций в этом месяце: {user_data['month_generations']}/{monthly_limit}",
+            f"🎫 Видео-кредиты: {user_data['video_credits']}",
+            f"🏷 Ниша: {user_data['niche'] or 'не указана'}",
+            f"🎭 Стиль контента: {user_data['content_style'] or 'не указан'}",
+            f"🎬 Всего генераций: {user_data['generations_count']}",
+            f"✅ Успешных генераций: {user_data['completed_generations']}",
+        ]
+        
+        # Кнопки управления пользователем
+        builder = InlineKeyboardBuilder()
+        builder.add(
+            types.InlineKeyboardButton(
+                text="💎 Изменить подписку",
+                callback_data=f"admin_manage_sub_{user_data['user_id']}"
+            ),
+            types.InlineKeyboardButton(
+                text="🎥 Добавить кредиты",
+                callback_data=f"admin_add_credits_{user_data['user_id']}"
+            ),
+            types.InlineKeyboardButton(
+                text="🎬 Посмотреть генерации",
+                callback_data=f"admin_user_gens_{user_data['user_id']}"
+            ),
+            types.InlineKeyboardButton(
+                text="🔙 К списку пользователей",
+                callback_data="admin_users_list"
+            )
+        )
+        builder.adjust(1)
+        
+        await message.answer(
+            "\n".join(response),
+            reply_markup=builder.as_markup()
+        )
+    
+    except Exception as e:
+        logger.error(f"Ошибка при показе профиля пользователя: {e}")
+        await message.answer("⚠️ Ошибка при загрузке профиля")
+
+
+@router.callback_query(F.data.startswith("admin_manage_sub_"))
+async def admin_manage_subscription(callback: CallbackQuery, state: FSMContext):
+    """Управление подпиской пользователя"""
+    if not await check_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещен")
+        return
+    
+    try:
+        user_id = int(callback.data.split("_")[3])
+        await state.update_data(user_id=user_id)
+        
+        builder = InlineKeyboardBuilder()
+        builder.add(
+            types.InlineKeyboardButton(text="💎 Premium", callback_data="sub_type_premium"),
+            types.InlineKeyboardButton(text="📱 Lite", callback_data="sub_type_lite"),
+            types.InlineKeyboardButton(text="🆓 Free", callback_data="sub_type_free"),
+            types.InlineKeyboardButton(text="🔙 Назад", callback_data=f"user_detail_{user_id}")
+        )
+        builder.adjust(2)
+        
+        await callback.message.edit_text(
+            f"Выберите тариф для пользователя {user_id}:",
+            reply_markup=builder.as_markup()
+        )
+        await state.set_state(AdminSubscriptionStates.waiting_for_subscription_type)
+    except Exception as e:
+        logger.error(f"Ошибка в admin_manage_subscription: {e}")
+        await callback.message.answer("⚠️ Ошибка при управлении подпиской")
+    finally:
+        await callback.answer()
+
+
+
+@router.callback_query(F.data.startswith("admin_user_gens_"))
+async def admin_user_generations(callback: CallbackQuery):
+    """Показывает генерации конкретного пользователя"""
+    if not await check_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещен")
+        return
+    
+    try:
+        user_id = int(callback.data.split("_")[3])
+        
+        async with db.pool.acquire() as conn:
+            user = await conn.fetchrow("SELECT username, full_name FROM users WHERE user_id = $1", user_id)
+            generations = await conn.fetch(
+                """
+                SELECT id, status, created_at, updated_at 
+                FROM generations 
+                WHERE user_id = $1
+                ORDER BY created_at DESC
+                LIMIT 20
+                """,
+                user_id
+            )
+        
+        if not user:
+            await callback.message.answer("⚠️ Пользователь не найден")
+            return
+        
+        username = f"@{user['username']}" if user['username'] else f"ID:{user_id}"
+        response = [
+            f"🎬 Последние генерации пользователя {user['full_name'] or 'Без имени'} {username}:\n"
+        ]
+        
+        for gen in generations:
+            gen_info = (
+                f"\n🆔 ID генерации: {gen['id']}",
+                f"📝 Статус: {gen['status']}",
+                f"🕒 Создано: {gen['created_at'].strftime('%d.%m.%Y %H:%M')}",
+                f"🔄 Обновлено: {gen['updated_at'].strftime('%d.%m.%Y %H:%M')}",
+                "━━━━━━━━━━━━━━━━━━"
+            )
+            response.extend(gen_info)
+        
+        # Кнопка возврата
+        builder = InlineKeyboardBuilder()
+        builder.add(
+            types.InlineKeyboardButton(
+                text="🔙 Назад к профилю",
+                callback_data=f"user_detail_{user_id}"
+            )
+        )
+        
+        # Разбиваем длинные сообщения
+        current_message = ""
+        for part in response:
+            if len(current_message) + len(part) > 4000:
+                await callback.message.answer(current_message)
+                current_message = part
+            else:
+                current_message += "\n" + part
+        
+        if current_message:
+            await callback.message.answer(
+                current_message,
+                reply_markup=builder.as_markup()
+            )
+            
+    except Exception as e:
+        logger.error(f"Ошибка в admin_user_generations: {e}")
+        await callback.message.answer("⚠️ Ошибка при получении генераций")
+    finally:
+        await callback.answer()
 
 @router.callback_query(F.data == "admin_broadcast")
 async def start_broadcast(callback: CallbackQuery, state: FSMContext):
@@ -226,71 +496,6 @@ async def cancel_broadcast_callback(callback: CallbackQuery, state: FSMContext):
     await callback.message.answer("❌ Рассылка отменена")
     await callback.answer()
 
-@router.callback_query(F.data == "admin_users")
-async def admin_users_list(callback: CallbackQuery):
-    """Показывает список пользователей с пагинацией"""
-    if not await check_admin(callback.from_user.id):
-        await callback.answer("⛔ Доступ запрещен")
-        return
-    
-    try:
-        # Используем db.pool вместо параметра db_pool
-        async with db.pool.acquire() as conn:
-            users = await conn.fetch("""
-                SELECT 
-                    u.user_id, 
-                    u.username, 
-                    u.full_name, 
-                    u.subscription_type, 
-                    p.niche, 
-                    p.content_style, 
-                    p.updated_at,
-                    COUNT(g.id) as generations_count
-                FROM users u
-                LEFT JOIN user_profiles p ON u.user_id = p.user_id
-                LEFT JOIN generations g ON u.user_id = g.user_id
-                GROUP BY u.user_id, p.niche, p.content_style, p.updated_at
-                ORDER BY u.created_at DESC
-                LIMIT 50
-            """)
-        
-        if not users:
-            await callback.answer("ℹ️ Нет пользователей")
-            return
-        
-        response = ["📊 Список пользователей (последние 50):\n"]
-        for user in users:
-            username = f"@{user['username']}" if user['username'] else ""
-            user_info = (
-                f"\n👤 {user['full_name'] or 'Без имени'} {username}\n"
-                f"🆔 ID: {user['user_id']}\n"
-                f"💎 Подписка: {user['subscription_type']}\n"
-                f"🏷 Ниша: {user['niche'] or 'не указана'}\n"
-                f"🎭 Стиль: {user['content_style'] or 'не указан'}\n"
-                f"🎬 Генераций: {user['generations_count']}\n"
-                f"🕒 Обновлено: {user['updated_at'].strftime('%d.%m.%Y %H:%M') if user['updated_at'] else 'никогда'}\n"
-                "━━━━━━━━━━━━━━━━━━"
-            )
-            response.append(user_info)
-        
-        # Разбиваем длинные сообщения
-        current_message = ""
-        for part in response:
-            if len(current_message) + len(part) > 4000:
-                await callback.message.answer(current_message)
-                current_message = part
-            else:
-                current_message += part
-        
-        if current_message:
-            await callback.message.answer(current_message)
-        
-    except Exception as e:
-        logger.error(f"Ошибка в admin_users_list: {e}")
-        await callback.message.answer("⚠️ Ошибка при получении списка пользователей")
-    finally:
-        await callback.answer()
-
 @router.callback_query(F.data == "admin_stats")
 async def admin_stats(callback: CallbackQuery):
     """Показывает статистику бота"""
@@ -351,27 +556,6 @@ async def admin_stats(callback: CallbackQuery):
     finally:
         await callback.answer()
 
-@router.callback_query(F.data == "admin_subscriptions")
-async def admin_subscriptions_menu(callback: CallbackQuery):
-    """Меню управления подписками"""
-    if not await check_admin(callback.from_user.id):
-        await callback.answer("⛔ Доступ запрещен")
-        return
-    
-    builder = InlineKeyboardBuilder()
-    builder.add(
-        types.InlineKeyboardButton(text="➕ Выдать подписку", callback_data="admin_grant_subscription"),
-        types.InlineKeyboardButton(text="➖ Отменить подписку", callback_data="admin_revoke_subscription"),
-        types.InlineKeyboardButton(text="🎫 Добавить видео-кредиты", callback_data="admin_add_credits"),
-        types.InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")
-    )
-    builder.adjust(1)
-    
-    await callback.message.edit_text(
-        "🛠 Управление подписками:",
-        reply_markup=builder.as_markup()
-    )
-    await callback.answer()
 
 @router.callback_query(F.data == "admin_grant_subscription")
 async def admin_grant_subscription_start(callback: CallbackQuery, state: FSMContext):
@@ -420,34 +604,31 @@ async def process_user_id_for_subscription(message: Message, state: FSMContext):
 async def process_subscription_type(callback: CallbackQuery, state: FSMContext):
     """Обработка выбора типа подписки"""
     sub_type = callback.data.split("_")[2]
+    data = await state.get_data()
+    user_id = data["user_id"]
     
     if sub_type == "cancel":
         await state.clear()
-        await callback.message.answer("❌ Выдача подписки отменена")
+        await callback.message.answer("❌ Изменение подписки отменено")
         await callback.answer()
         return
     
-    await state.update_data(subscription_type="premium" if sub_type == "premium" else "free")
+    await state.update_data(subscription_type=sub_type)
     
     if sub_type == "free":
         # Для бесплатного тарифа сразу применяем изменения
-        data = await state.get_data()
-        user_id = data["user_id"]
-        
         async with db.pool.acquire() as conn:
             await conn.execute(
                 "UPDATE users SET subscription_type = 'free', subscription_expire = NULL WHERE user_id = $1",
                 user_id
             )
         
-        await callback.message.answer(
-            f"✅ Пользователю {user_id} установлен бесплатный тариф"
-        )
+        await callback.message.answer(f"✅ Пользователю {user_id} установлен бесплатный тариф")
         await state.clear()
     else:
-        # Для премиума запрашиваем срок
+        # Для премиума и lite запрашиваем срок
         await callback.message.answer(
-            "Введите срок действия подписки в днях (например, 30):\n"
+            f"Введите срок действия подписки в днях для тарифа {sub_type.capitalize()}:\n"
             "Или отправьте /cancel для отмены"
         )
         await state.set_state(AdminSubscriptionStates.waiting_for_duration)
@@ -455,11 +636,13 @@ async def process_subscription_type(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_reply_markup()
     await callback.answer()
 
+
 @router.message(AdminSubscriptionStates.waiting_for_duration, F.text == "/cancel")
 async def cancel_subscription_duration(message: Message, state: FSMContext):
     """Отмена установки срока подписки"""
     await state.clear()
     await message.answer("❌ Выдача подписки отменена")
+
 
 @router.message(AdminSubscriptionStates.waiting_for_duration)
 async def process_subscription_duration(message: Message, state: FSMContext):
@@ -471,24 +654,25 @@ async def process_subscription_duration(message: Message, state: FSMContext):
         
         data = await state.get_data()
         user_id = data["user_id"]
+        sub_type = data["subscription_type"]
         expire_date = datetime.now() + timedelta(days=duration)
         
         async with db.pool.acquire() as conn:
             await conn.execute(
-                "UPDATE users SET subscription_type = 'premium', subscription_expire = $1 WHERE user_id = $2",
-                expire_date, user_id
+                "UPDATE users SET subscription_type = $1, subscription_expire = $2 WHERE user_id = $3",
+                sub_type, expire_date, user_id
             )
         
         await message.answer(
-            f"✅ Пользователю {user_id} выдана премиум подписка на {duration} дней\n"
+            f"✅ Пользователю {user_id} выдан тариф {sub_type.capitalize()} на {duration} дней\n"
             f"Дата окончания: {expire_date.strftime('%d.%m.%Y')}"
         )
         await state.clear()
     except ValueError:
-        await message.answer("⚠️ Неверный формат. Введите число дней (например, 30)")
+        await message.answer("⚠️ Неверный формат. Введите положительное число дней")
 
 @router.callback_query(F.data == "admin_revoke_subscription")
-async def admin_revoke_subscription(callback: CallbackQuery):
+async def admin_revoke_subscription(callback: CallbackQuery, state: FSMContext):
     """Отмена подписки пользователя"""
     if not await check_admin(callback.from_user.id):
         await callback.answer("⛔ Доступ запрещен")
@@ -522,19 +706,100 @@ async def process_revoke_subscription(message: Message, state: FSMContext):
     except ValueError:
         await message.answer("⚠️ Неверный формат ID. Введите числовой ID пользователя.")
 
-@router.callback_query(F.data == "admin_add_credits")
+@router.callback_query(F.data.startswith("admin_add_credits_"))
 async def admin_add_credits_start(callback: CallbackQuery, state: FSMContext):
-    """Добавление видео-кредитов"""
+    """Начало добавления кредитов для конкретного пользователя"""
     if not await check_admin(callback.from_user.id):
         await callback.answer("⛔ Доступ запрещен")
         return
     
-    await callback.message.answer(
-        "Введите ID пользователя и количество кредитов через пробел (например: 12345 5):\n"
-        "Или отправьте /cancel для отмены"
-    )
-    await state.set_state(AdminSubscriptionStates.waiting_for_user_id)
-    await callback.answer()
+    try:
+        user_id = int(callback.data.split("_")[3])
+        await state.update_data(user_id=user_id)
+        
+        builder = InlineKeyboardBuilder()
+        # Добавляем кнопки для быстрого выбора популярных пакетов
+        builder.add(
+            types.InlineKeyboardButton(text="1 кредит", callback_data="credits_1"),
+            types.InlineKeyboardButton(text="5 кредитов", callback_data="credits_5"),
+            types.InlineKeyboardButton(text="10 кредитов", callback_data="credits_10"),
+            types.InlineKeyboardButton(text="20 кредитов", callback_data="credits_20"),
+            types.InlineKeyboardButton(text="Другое количество", callback_data="credits_custom"),
+            types.InlineKeyboardButton(text="🔙 Назад", callback_data=f"user_detail_{user_id}")
+        )
+        builder.adjust(2)
+        
+        await callback.message.edit_text(
+            f"Выберите количество видео-кредитов для пользователя {user_id}:",
+            reply_markup=builder.as_markup()
+        )
+    except Exception as e:
+        logger.error(f"Ошибка в admin_add_credits_start: {e}")
+        await callback.message.answer("⚠️ Ошибка при добавлении кредитов")
+    finally:
+        await callback.answer()
+
+@router.callback_query(F.data.startswith("credits_"))
+async def process_credits_selection(callback: CallbackQuery, state: FSMContext):
+    """Обработка выбора количества кредитов"""
+    try:
+        data = await state.get_data()
+        user_id = data["user_id"]
+        
+        if callback.data == "credits_custom":
+            await callback.message.answer(
+                "Введите количество видео-кредитов для добавления:\n"
+                "Или отправьте /cancel для отмены"
+            )
+            await state.set_state(AdminSubscriptionStates.waiting_for_duration)
+            await callback.message.edit_reply_markup()
+            await callback.answer()
+            return
+        
+        amount = int(callback.data.split("_")[1])
+        success = await db.add_video_credits(user_id, amount)
+        
+        if success:
+            credits = await db.get_video_credits(user_id)
+            await callback.message.edit_text(
+                f"✅ Пользователю {user_id} добавлено {amount} видео-кредитов\n"
+                f"Теперь у него {credits} кредитов"
+            )
+        else:
+            await callback.message.edit_text("⚠️ Не удалось добавить кредиты")
+        
+        await state.clear()
+    except Exception as e:
+        logger.error(f"Ошибка при добавлении кредитов: {e}")
+        await callback.message.answer("⚠️ Ошибка при добавлении кредитов")
+    finally:
+        await callback.answer()
+
+@router.message(AdminSubscriptionStates.waiting_for_duration)
+async def process_custom_credits(message: Message, state: FSMContext):
+    """Обработка ввода пользовательского количества кредитов"""
+    try:
+        amount = int(message.text)
+        if amount <= 0:
+            raise ValueError
+        
+        data = await state.get_data()
+        user_id = data["user_id"]
+        
+        success = await db.add_video_credits(user_id, amount)
+        
+        if success:
+            credits = await db.get_video_credits(user_id)
+            await message.answer(
+                f"✅ Пользователю {user_id} добавлено {amount} видео-кредитов\n"
+                f"Теперь у него {credits} кредитов"
+            )
+        else:
+            await message.answer("⚠️ Не удалось добавить кредиты")
+        
+        await state.clear()
+    except ValueError:
+        await message.answer("⚠️ Неверный формат. Введите положительное число")
 
 @router.message(AdminSubscriptionStates.waiting_for_user_id)
 async def process_add_credits(message: Message, state: FSMContext):
@@ -572,7 +837,6 @@ async def admin_back_to_menu(callback: CallbackQuery):
     await cmd_admin(callback.message)
     await callback.answer()
 
-
 @router.callback_query(F.data == "admin_generations")
 async def admin_generations(callback: CallbackQuery):
     """Показывает последние генерации"""
@@ -605,10 +869,10 @@ async def admin_generations(callback: CallbackQuery):
         
         response = ["🎬 Последние генерации (30):\n"]
         for gen in generations:
-            username = f"@{gen['username']}" if gen['username'] else ""
+            username = f"@{gen['username']}" if gen['username'] else f"ID:{gen['user_id']}"
             gen_info = (
                 f"\n🆔 ID: {gen['id']}",
-                f"👤 Пользователь: {username} (ID: {gen['user_id']})",
+                f"👤 Пользователь: {username}",
                 f"📝 Статус: {gen['status']}",
                 f"📏 Длина скрипта: {gen['script_length']} символов",
                 f"🔊 Аудио: {'есть' if gen['has_audio'] else 'нет'}",

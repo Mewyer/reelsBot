@@ -16,13 +16,14 @@ logger = logging.getLogger(__name__)
 
 ONE_TIME_PURCHASES = {
     "single": {"name": "1 видео", "price": config.SINGLE_VIDEO_PRICE, "amount": 1},
-    "pack5": {"name": "5 видео", "price": config.PACK_5_VIDEOS_PRICE, "amount": 5}
+    "pack5": {"name": "5 видео", "price": config.PACK_5_VIDEOS_PRICE, "amount": 5},
+    "pack10": {"name": "10 видео", "price": config.PACK_10_VIDEOS_PRICE, "amount": 10},
+    "pack20": {"name": "20 видео", "price": config.PACK_20_VIDEOS_PRICE, "amount": 20}
 }
 
-# Тарифы подписки
 SUBSCRIPTION_PLANS = {
-    "1": {"name": "Премиум (30 дней)", "price": 299, "duration": 30},
-    "2": {"name": "Премиум (90 дней)", "price": 799, "duration": 90}
+    "lite": {"name": "Lite (30 дней)", "price": config.LITE_PRICE, "duration": 30, "daily_limit": config.LITE_DAILY_LIMIT},
+    "premium": {"name": "Premium (30 дней)", "price": config.PREMIUM_PRICE, "duration": 30, "daily_limit": config.PREMIUM_DAILY_LIMIT}
 }
 
 # Кэш для хранения созданных инвойсов
@@ -33,23 +34,25 @@ async def cmd_buy_videos(message: Message):
     """Меню покупки разовых видео"""
     builder = InlineKeyboardBuilder()
     
-    # Кнопки для разовых покупок
     for purchase_id, purchase in ONE_TIME_PURCHASES.items():
         builder.add(types.InlineKeyboardButton(
             text=f"🎬 {purchase['name']} - {purchase['price']} руб",
             callback_data=f"buy_{purchase_id}"
         ))
     
-    # Кнопка подписки
     builder.add(types.InlineKeyboardButton(
-        text="💎 Премиум подписка",
-        callback_data="subscribe_menu"
+        text="💎 Перейти на Lite",
+        callback_data="subscribe_lite"
+    ))
+    builder.add(types.InlineKeyboardButton(
+        text="💎 Перейти на Premium",
+        callback_data="subscribe_premium"
     ))
     
     builder.adjust(1)
     
     await message.answer(
-        "🎬 Выберите вариант покупки:",
+        "🎬 Выберите вариант покупки или подписки:",
         reply_markup=builder.as_markup()
     )
 

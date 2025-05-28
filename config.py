@@ -39,11 +39,23 @@ class Config:
     TEMP_DIR: str = os.getenv("TEMP_DIR", "temp")
     ASSETS_DIR: str = os.getenv("ASSETS_DIR", "assets")
     
-    # Limits
-    FREE_DAILY_LIMIT: int = int(os.getenv("FREE_DAILY_LIMIT", "1"))
-    PREMIUM_DAILY_LIMIT: int = int(os.getenv("PREMIUM_DAILY_LIMIT", "10"))
-    SINGLE_VIDEO_PRICE: int = int(os.getenv("SINGLE_VIDEO_PRICE", "49"))  # цена за 1 видео
-    PACK_5_VIDEOS_PRICE: int = int(os.getenv("PACK_5_VIDEOS_PRICE", "199"))  # цена за 5 видео
+    # Тарифы
+    FREE_DAILY_LIMIT = 1
+    FREE_MONTHLY_LIMIT = 30
+    LITE_DAILY_LIMIT = 5
+    LITE_MONTHLY_LIMIT = 150
+    PREMIUM_DAILY_LIMIT = 10
+    PREMIUM_MONTHLY_LIMIT = 300
+
+    # Цены подписок
+    LITE_PRICE = 799
+    PREMIUM_PRICE = 1599
+
+    # Цены пакетов видео
+    SINGLE_VIDEO_PRICE = 49
+    PACK_5_VIDEOS_PRICE = 199
+    PACK_10_VIDEOS_PRICE = 349
+    PACK_20_VIDEOS_PRICE = 599
     # Security
     REQUEST_TIMEOUT: int = int(os.getenv("REQUEST_TIMEOUT", "30"))
     

@@ -15,12 +15,11 @@ class TTSService:
     def __init__(self):
         self.client = ElevenLabs(api_key=config.ELEVENLABS_API_KEY)
         self.default_voice_id = config.DEFAULT_VOICE_ID
-        self.default_model = "eleven_turbo_v2"
+        self.default_model = "eleven_multilingual_v2"
         self.max_retries = 3
         self.retry_delay = 5
         self.output_dir = Path(os.getenv("AUDIO_OUTPUT_DIR", "/tmp/generated_audio"))
         
-        # Создаем директорию с проверкой прав
         try:
             self.output_dir.mkdir(exist_ok=True, parents=True)
             # Тест записи в директорию
@@ -69,8 +68,8 @@ class TTSService:
                         text=text,
                         model_id=self.default_model,
                         voice_settings=VoiceSettings(
-                            stability=0.71,
-                            similarity_boost=0.5,
+                            stability=0.8,
+                            similarity_boost=0.75,
                             style=0.0,
                             speaker_boost=True
                         )

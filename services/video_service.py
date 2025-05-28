@@ -24,6 +24,19 @@ def extract_captions(full_script: str) -> str:
     
     return '\n'.join(caption_lines)
 
+def _has_audio_stream(file_path: str) -> bool:
+    """Проверяет, есть ли в файле аудиопоток"""
+    try:
+        result = subprocess.run([
+            "ffprobe", "-v", "error", "-select_streams", "a",
+            "-show_entries", "stream=codec_type", 
+            "-of", "default=nokey=1:noprint_wrappers=1", file_path
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        return result.returncode == 0 and result.stdout.strip() == "audio"
+    except Exception as e:
+        logger.error(f"Ошибка проверки аудиопотока: {str(e)}")
+        return False
+
 async def create_video(
     script: str, 
     audio_path: str, 
@@ -49,7 +62,7 @@ async def create_video(
             "ffmpeg",
             "-y",
             "-i", audio_path,
-            "-af", "volume=3.0",  # Увеличиваем громкость в 3 раза
+            "-af", "volume=3.0",
             normalized_audio_path
         ]
         subprocess.run(normalize_cmd, check=True)
@@ -66,8 +79,12 @@ async def create_video(
                 "-y",
                 "-f", "lavfi",
                 "-i", "color=c=black:s=1080x1920:d=60",
+                "-f", "lavfi",
+                "-i", "anullsrc=r=44100:cl=mono",
                 "-c:v", "libx264",
+                "-c:a", "aac",
                 "-t", "60",
+                "-shortest",
                 bg_path
             ]
             subprocess.run(cmd_create_bg, check=True)
@@ -106,16 +123,12 @@ async def create_video(
             subtitles_path
         )
         
-        # Команда ffmpeg с микшированием аудио и субтитрами
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-i", bg_path,
-            "-i", normalized_audio_path,
-            "-filter_complex",
-            # Наложение субтитров
-            f"[0:v]subtitles={subtitles_path}:"
-            "force_style="
+        # Проверяем, есть ли аудио в фоновом видео
+        has_bg_audio = _has_audio_stream(bg_path)
+
+        # Формируем фильтры для FFmpeg
+        filter_complex = [
+            f"[0:v]subtitles='{subtitles_path}':force_style="
             "'Fontsize=12,"
             "PrimaryColour=&HFFFFFF&,"
             "OutlineColour=&H000000&,"
@@ -126,12 +139,26 @@ async def create_video(
             "MarginV=30,"
             "MarginL=20,MarginR=20,"
             "FontName=Arial,"
-            "WrapStyle=1'"
-            "[v];"
-            # Микширование аудио (если у фона есть звук)
-            "[0:a]volume=0.1[bg_audio];"  # Уменьшаем громкость фона до 10%
-            "[1:a]volume=1.0[voice_audio];"  # Оставляем полную громкость озвучки
-            "[bg_audio][voice_audio]amix=inputs=2:duration=first[a]",  # Микшируем аудиопотоки
+            "WrapStyle=1'[v]"
+        ]
+
+        # Добавляем аудиофильтры в зависимости от наличия аудио в фоне
+        if has_bg_audio:
+            filter_complex.extend([
+                "[0:a]volume=0.1[bg_audio]",
+                "[1:a]volume=1.0[voice_audio]",
+                "[bg_audio][voice_audio]amix=inputs=2:duration=first[a]"
+            ])
+        else:
+            filter_complex.append("[1:a]volume=1.0[a]")
+
+        # Формируем полную команду FFmpeg
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i", bg_path,
+            "-i", normalized_audio_path,
+            "-filter_complex", ";".join(filter_complex),
             "-map", "[v]",
             "-map", "[a]",
             "-c:v", "libx264",
@@ -193,7 +220,7 @@ async def _generate_dynamic_subtitles(script: str, audio_path: str, output_path:
                 
                 # Разбиваем длинные строки на 2 части
                 words = sentence.split()
-                if len(words) > 8:  # Если больше 8 слов, разбиваем на две строки
+                if len(words) > 8:
                     mid = len(words) // 2
                     sentence = ' '.join(words[:mid]) + '\n' + ' '.join(words[mid:])
                 
