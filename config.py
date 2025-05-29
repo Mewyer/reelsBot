@@ -21,8 +21,9 @@ class Config:
     # ElevenLabs
     ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "")
     ELEVENLABS_BASE_URL: str = os.getenv("ELEVENLABS_BASE_URL", "https://api.elevenlabs.io/v1")
-    DEFAULT_VOICE_ID: str = os.getenv("DEFAULT_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
-    
+    DEFAULT_VOICE_ID: str = os.getenv("DEFAULT_VOICE_ID")
+    MALE_VOICE_ID: str = os.getenv("MALE_VOICE_ID")
+    FEMALE_VOICE_ID: str  = os.getenv("FEMALE_VOICE_ID")
     # Database
     POSTGRES_DB: str = os.getenv("POSTGRES_DB", "reelsbot")
     POSTGRES_USER: str = os.getenv("POSTGRES_USER", "user")
@@ -56,6 +57,7 @@ class Config:
     PACK_5_VIDEOS_PRICE = 199
     PACK_10_VIDEOS_PRICE = 349
     PACK_20_VIDEOS_PRICE = 599
+    
     # Security
     REQUEST_TIMEOUT: int = int(os.getenv("REQUEST_TIMEOUT", "30"))
     

@@ -66,6 +66,7 @@ class GenerationStates(StatesGroup):
     waiting_for_idea = State()
     waiting_for_style = State()
     waiting_for_background = State()
+    waiting_for_voice = State()  
     previewing_script = State()
     editing_script = State()
 
@@ -299,6 +300,7 @@ async def _generate_script(callback: CallbackQuery, state: FSMContext):
         await callback.message.answer("⚠️ Не удалось создать текст для озвучки")
         await state.clear()
 
+# В process_style_selection изменим переход на выбор голоса вместо генерации сценария
 @router.callback_query(GenerationStates.waiting_for_style, F.data.startswith("style_"))
 async def process_style_selection(callback: CallbackQuery, state: FSMContext):
     style_id = callback.data.replace("style_", "")
@@ -310,7 +312,25 @@ async def process_style_selection(callback: CallbackQuery, state: FSMContext):
     
     await state.update_data(style=style_data["name"], style_id=style_id)
     await callback.message.edit_reply_markup()
+    await state.set_state(GenerationStates.waiting_for_voice)  # Переходим к выбору голоса
+    
+    builder = InlineKeyboardBuilder()
+    builder.button(text="👨 Мужской голос", callback_data="voice_male")
+    builder.button(text="👩 Женский голос", callback_data="voice_female")
+    builder.adjust(2)
+    
+    await callback.message.answer("🗣 Выберите голос для озвучки:", reply_markup=builder.as_markup())
+
+# Добавим обработчик выбора голоса
+@router.callback_query(GenerationStates.waiting_for_voice, F.data.startswith("voice_"))
+async def process_voice_selection(callback: CallbackQuery, state: FSMContext):
+    voice_gender = callback.data.replace("voice_", "")
+    await state.update_data(voice_gender=voice_gender)
+    await callback.message.edit_reply_markup()
     await state.set_state(GenerationStates.waiting_for_background)
+    
+    data = await state.get_data()
+    style_data = VIDEO_STYLES.get(data['style_id'])
     
     # Показываем фоны для выбранного стиля
     backgrounds = await _get_available_backgrounds()
@@ -322,7 +342,7 @@ async def process_style_selection(callback: CallbackQuery, state: FSMContext):
         builder.button(text=f"🎥 {bg['name']}", callback_data=f"bg_preview_{bg['filename']}")
     
     # Добавляем кнопку для выбора фона по умолчанию
-    builder.button(text="✅ По умолчанию", callback_data=f"bg_default_{style_id}")
+    builder.button(text="✅ По умолчанию", callback_data=f"bg_default_{data['style_id']}")
     builder.button(text="🚫 Без фона", callback_data="bg_none")
     builder.adjust(2)
     
@@ -330,6 +350,7 @@ async def process_style_selection(callback: CallbackQuery, state: FSMContext):
         f"🎥 Выберите фон для стиля {style_data['name']}:",
         reply_markup=builder.as_markup()
     )
+
 
 # Добавим обработчик для выбора фона по умолчанию
 @router.callback_query(GenerationStates.waiting_for_background, F.data.startswith("bg_default_"))
@@ -565,7 +586,11 @@ async def approve_script(callback: CallbackQuery, state: FSMContext):
         audio_path = os.path.join("generated_audio", audio_filename)
         
         os.makedirs("generated_audio", exist_ok=True)
-        success = await tts_service.generate_audio(voiceover_text, audio_path)
+        success = await tts_service.generate_audio(
+            voiceover_text, 
+            audio_path,
+            voice_gender=data.get('voice_gender')  
+        )
         
         if not success or not os.path.exists(audio_path):
             raise Exception("Не удалось сгенерировать аудио")

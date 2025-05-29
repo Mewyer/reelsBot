@@ -15,6 +15,10 @@ class TTSService:
     def __init__(self):
         self.client = ElevenLabs(api_key=config.ELEVENLABS_API_KEY)
         self.default_voice_id = config.DEFAULT_VOICE_ID
+        self.voice_options = {
+            "male": config.MALE_VOICE_ID,  # Добавьте в config.py MALE_VOICE_ID
+            "female": config.FEMALE_VOICE_ID  # Добавьте в config.py FEMALE_VOICE_ID
+        }
         self.default_model = "eleven_multilingual_v2"
         self.max_retries = 3
         self.retry_delay = 5
@@ -36,14 +40,21 @@ class TTSService:
         self,
         text: str,
         output_path: Optional[str] = None,
-        voice_id: Optional[str] = None
+        voice_id: Optional[str] = None,
+        voice_gender: Optional[str] = None  # Добавляем параметр для выбора пола голоса
     ) -> bool:
         """Генерация аудио с проверкой на каждом этапе"""
         if not text or not isinstance(text, str):
             logger.error("Invalid text for TTS")
             return False
             
-        voice_id = voice_id or self.default_voice_id
+        # Выбираем голос: если указан voice_id - используем его, иначе по полу, иначе дефолтный
+        if voice_id:
+            voice_id = voice_id
+        elif voice_gender and voice_gender in self.voice_options:
+            voice_id = self.voice_options[voice_gender]
+        else:
+            voice_id = self.default_voice_id
         
         # Генерация пути если не указан
         if not output_path:
